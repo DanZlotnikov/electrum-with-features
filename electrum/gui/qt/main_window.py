@@ -32,6 +32,7 @@ from decimal import Decimal
 import base64
 from functools import partial
 
+
 from PyQt5.QtGui import *
 from PyQt5.QtCore import *
 import PyQt5.QtCore as QtCore
@@ -61,6 +62,7 @@ from .transaction_dialog import show_transaction
 from .fee_slider import FeeSlider
 from .util import *
 from .installwizard import WIF_HELP_TEXT
+from electrum.scripts.dan_helpers import *
 
 
 class StatusBarButton(QPushButton):
@@ -71,7 +73,7 @@ class StatusBarButton(QPushButton):
         self.setMaximumWidth(25)
         self.clicked.connect(self.onPress)
         self.func = func
-        self.setIconSize(QSize(25,25))
+        self.setIconSize(QSize(100,25))
 
     def onPress(self, checked=False):
         '''Drops the unwanted PyQt5 "checked" argument'''
@@ -1039,6 +1041,84 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.feerounding_text = (_('Additional {} satoshis are going to be added.')
                                  .format(num_satoshis_added))
 
+    def create_addresses_window(self, list_of_addresses):
+        self.w = QWidget()
+        self.w.resize(300, 200)
+        self.w.move(300, 300)
+        self.w.setWindowTitle('Select Address')
+
+        self.address_combo_box = QComboBox(self.w)
+        self.address_combo_box.resize(self.address_combo_box.width() * 2, self.address_combo_box.height())
+        self.address_combo_box.move(self.w.width() / 2 - self.address_combo_box.width() / 2 , self.w.height() / 2 - 20)
+
+        for address in list_of_addresses:
+            self.address_combo_box.addItem(str(address))
+
+        self.address_pick_label = QLabel(self.w)
+        self.address_pick_label.setText("Please select an address: ")
+        self.address_pick_label.move(self.address_combo_box.x() + 5, self.address_combo_box.y() - 40)
+
+        self.address_button = QPushButton(self.w)
+        self.address_button.setText("OK")
+        self.address_button.clicked.connect(self.pick_address_and_close)
+        self.address_button.move(self.address_combo_box.x() + 50, self.address_combo_box.y() + 50)
+
+        self.w.show()
+
+
+    def pick_address_and_close(self):
+        picked_address = str(self.address_combo_box.currentText())
+        self.payto_e.setText(picked_address)
+        self.payto_e.setDisabled(True)
+        self.domain_textbox.setDisabled(True)
+        self.domain_button.setText('Cancel')
+
+
+        self.domain_button.clicked.disconnect(self.on_first_click)
+        self.domain_button.clicked.connect(self.on_second_click)
+
+        self.w.close()
+        return picked_address
+
+
+    @pyqtSlot()
+    def on_first_click(self):
+        domain = self.domain_textbox.text()
+        if len(domain) is 0:
+            return
+
+        addresses = get_address_from_domain(domain)
+        if len(addresses) <= 1:
+            self.domain_button.setText('Cancel')
+            self.domain_textbox.setDisabled(True)
+            self.payto_e.setDisabled(True)
+            self.domain_button.clicked.disconnect(self.on_first_click)
+            self.domain_button.clicked.connect(self.on_second_click)
+
+            if len(addresses) is 0:
+                self.payto_e.setText('No address found.')
+                return
+
+            if len(addresses) is 1:
+                self.payto_e.setText(addresses[0])
+                return
+
+        self.create_addresses_window(addresses)
+
+
+    @pyqtSlot()
+    def on_second_click(self):
+        self.domain_textbox.setText('')
+        self.payto_e.setText('')
+        self.payto_e.setDisabled(False)
+        self.domain_textbox.setDisabled(False)
+        self.domain_button.setText('Select Address')
+        self.domain_button.clicked.disconnect(self.on_second_click)
+        self.domain_button.clicked.connect(self.on_first_click)
+
+
+
+
     def create_send_tab(self):
         # A 4-column grid layout.  All the stretch is in the last column.
         # The exchange rate plugin adds a fiat widget in column 2
@@ -1046,14 +1126,28 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         grid.setSpacing(8)
         grid.setColumnStretch(3, 1)
 
+        self.domain_e = QWidget()
+        msg = _('E-mail, domain, or phone number connected to BitCoin addresses.') + '\n\n' \
+              + _(
+            'You may enter either of the above and a list of connected addresses will appear for you to choose from. ')
+        domain_label = HelpLabel(_('Alias (Optional)'), msg)
+        self.domain_textbox = QLineEdit(self.domain_e)
+        self.domain_button = QPushButton("Select Address")
+        self.domain_button.clicked.connect(self.on_first_click)
+        grid.addWidget(domain_label, 0, 0)
+        grid.addWidget(self.domain_button, 1, 1, 1, 1)
+        grid.addWidget(self.domain_e, 0, 1, 1, -1)
+        grid.addWidget(self.domain_textbox, 0, 1, 1, -1)
+
+
         from .paytoedit import PayToEdit
         self.amount_e = BTCAmountEdit(self.get_decimal_point)
         self.payto_e = PayToEdit(self)
         msg = _('Recipient of the funds.') + '\n\n'\
               + _('You may enter a Bitcoin address, a label from your list of contacts (a list of completions will be proposed), or an alias (email-like address that forwards to a Bitcoin address)')
         payto_label = HelpLabel(_('Pay to'), msg)
-        grid.addWidget(payto_label, 1, 0)
-        grid.addWidget(self.payto_e, 1, 1, 1, -1)
+        grid.addWidget(payto_label, 4, 0)
+        grid.addWidget(self.payto_e, 4, 1, 1, -1)
 
         completer = QCompleter()
         completer.setCaseSensitivity(False)
@@ -1063,16 +1157,16 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         msg = _('Description of the transaction (not mandatory).') + '\n\n'\
               + _('The description is not sent to the recipient of the funds. It is stored in your wallet file, and displayed in the \'History\' tab.')
         description_label = HelpLabel(_('Description'), msg)
-        grid.addWidget(description_label, 2, 0)
+        grid.addWidget(description_label, 5, 0)
         self.message_e = MyLineEdit()
-        grid.addWidget(self.message_e, 2, 1, 1, -1)
+        grid.addWidget(self.message_e, 5, 1, 1, -1)
 
         self.from_label = QLabel(_('From'))
-        grid.addWidget(self.from_label, 3, 0)
+        grid.addWidget(self.from_label, 6, 0)
         self.from_list = MyTreeWidget(self, self.from_list_menu, ['',''])
         self.from_list.setHeaderHidden(True)
         self.from_list.setMaximumHeight(80)
-        grid.addWidget(self.from_list, 3, 1, 1, -1)
+        grid.addWidget(self.from_list, 6, 1, 1, -1)
         self.set_pay_from([])
 
         msg = _('Amount to be sent.') + '\n\n' \
@@ -1080,22 +1174,22 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
               + _('Note that if you have frozen some of your addresses, the available funds will be lower than your total balance.') + '\n\n' \
               + _('Keyboard shortcut: type "!" to send all your coins.')
         amount_label = HelpLabel(_('Amount'), msg)
-        grid.addWidget(amount_label, 4, 0)
-        grid.addWidget(self.amount_e, 4, 1)
+        grid.addWidget(amount_label, 7, 0)
+        grid.addWidget(self.amount_e, 7, 1)
 
         self.fiat_send_e = AmountEdit(self.fx.get_currency if self.fx else '')
         if not self.fx or not self.fx.is_enabled():
             self.fiat_send_e.setVisible(False)
-        grid.addWidget(self.fiat_send_e, 4, 2)
+        grid.addWidget(self.fiat_send_e, 7, 2)
         self.amount_e.frozen.connect(
             lambda: self.fiat_send_e.setFrozen(self.amount_e.isReadOnly()))
 
         self.max_button = EnterButton(_("Max"), self.spend_max)
         self.max_button.setFixedWidth(140)
-        grid.addWidget(self.max_button, 4, 3)
+        grid.addWidget(self.max_button, 7, 3)
         hbox = QHBoxLayout()
         hbox.addStretch(1)
-        grid.addLayout(hbox, 4, 4)
+        grid.addLayout(hbox, 7, 4)
 
         msg = _('Bitcoin transactions are in general not free. A transaction fee is paid by the sender of the funds.') + '\n\n'\
               + _('The amount of fee can be decided freely by the sender. However, transactions with low fees take more time to be processed.') + '\n\n'\
@@ -1176,7 +1270,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         vbox_feelabel = QVBoxLayout()
         vbox_feelabel.addWidget(self.fee_e_label)
         vbox_feelabel.addStretch(1)
-        grid.addLayout(vbox_feelabel, 5, 0)
+        grid.addLayout(vbox_feelabel, 8, 0)
 
         self.fee_adv_controls = QWidget()
         hbox = QHBoxLayout(self.fee_adv_controls)
@@ -1191,7 +1285,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         vbox_feecontrol.addWidget(self.fee_adv_controls)
         vbox_feecontrol.addWidget(self.fee_slider)
 
-        grid.addLayout(vbox_feecontrol, 5, 1, 1, -1)
+        grid.addLayout(vbox_feecontrol, 8, 1, 1, -1)
 
         if not self.config.get('show_fee', False):
             self.fee_adv_controls.setVisible(False)
@@ -1205,7 +1299,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         buttons.addWidget(self.clear_button)
         buttons.addWidget(self.preview_button)
         buttons.addWidget(self.send_button)
-        grid.addLayout(buttons, 6, 1, 1, 3)
+        grid.addLayout(buttons, 9, 1, 1, 3)
 
         self.amount_e.shortcut.connect(self.spend_max)
         self.payto_e.textChanged.connect(self.update_fee)
@@ -1258,6 +1352,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.invoices_label = QLabel(_('Invoices'))
         from .invoice_list import InvoiceList
         self.invoice_list = InvoiceList(self)
+
+
+
 
         vbox0 = QVBoxLayout()
         vbox0.addLayout(grid)
